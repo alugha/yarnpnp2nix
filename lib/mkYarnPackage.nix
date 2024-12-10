@@ -1,9 +1,9 @@
-{ defaultPkgs, lib }:
+{ pkgs, lib, yarn-berry, nodejs, jq }:
 
 with lib;
 
 let
-  nixPlugin = "${defaultPkgs.callPackage ../yarnPlugin.nix {}}/plugin.js";
+  nixPlugin = "${pkgs.callPackage ../yarnPlugin.nix {}}/plugin.js";
 
   setupYarnBinScript = { yarnManifestSettings }: ''
     export YARN_PLUGINS=${nixPlugin}
@@ -18,19 +18,17 @@ let
 
   mkYarnPackagesFromManifest =
     {
-      pkgs ? defaultPkgs,
       yarnManifest,
       packageOverrides ? {},
     }:
     let
       yarnManifestSettings = yarnManifest.settings;
       mergedManifest = applyPackageOverrides { yarnManifest = yarnManifest.packages; inherit packageOverrides; };
-      allPackageData = buildPackageDataFromYarnManifest { inherit pkgs; yarnManifest = mergedManifest; inherit yarnManifestSettings; };
+      allPackageData = buildPackageDataFromYarnManifest { yarnManifest = mergedManifest; inherit yarnManifestSettings; };
     in
     mapAttrs (key: value:
       mkYarnPackageFromManifest_internal {
         package = key;
-        inherit pkgs;
         yarnManifest = mergedManifest;
         inherit yarnManifestSettings;
         inherit allPackageData;
@@ -86,7 +84,7 @@ let
       );
 
       createLockFileScript = builtins.appendContext ''
-        cat ${packageRegistryFile} | ${defaultPkgs.jq}/bin/jq -rcM \
+        cat ${packageRegistryFile} | ${jq}/bin/jq -rcM \
           --arg packageLocation "$packageLocation" \
           --arg locatorString ${builtins.toJSON locatorString} \
           '.[$locatorString].packageLocation = $packageLocation' > $tmpDir/packageRegistryData.json
@@ -98,7 +96,6 @@ let
 
   mkYarnPackage_internal =
     {
-      pkgs,
       name,
       outputName ? name,
       src ? null,
@@ -128,7 +125,7 @@ let
       isSourceTgz = src != null && (last (splitString "." src)) == "tgz";
       isSourcePatch = src != null && (substring 0 6 reference) == "patch:";
 
-      willFetch = if src == null || isSourceTgz || isSourcePatch then true else false;
+      willFetch = src == null || isSourcePatch || isSourceTgz;
       willBuild = !willFetch;
       willOutputBeZip = src == null && shouldBeUnplugged == false;
 
@@ -145,7 +142,6 @@ let
       });
 
       packageRegistry = buildPackageRegistry {
-        inherit pkgs;
         topLevel = packageManifest;
         inherit allPackageData;
       };
@@ -165,9 +161,9 @@ let
           inherit name;
           phases = [ "generateRuntimePhase" ];
 
-          buildInputs = with pkgs; [
+          buildInputs = [
             nodejsPackage
-            defaultPkgs.yarn-berry
+            yarn-berry
           ];
 
           generateRuntimePhase = ''
@@ -187,8 +183,8 @@ let
             #!${pkgs.bashInteractive}/bin/bash
 
             pnpDir="\$(mktemp -d)"
-            (cd $out && YARN_PLUGINS=${nixPlugin} ${defaultPkgs.yarn-berry}/bin/yarn nix generate-pnp-file \$pnpDir $out/packageRegistryData.json "${locatorString}")
-            cp --no-preserve=mode "${./.pnp.loader.mjs}" \$pnpDir/.pnp.loader.mjs
+            (cd $out && YARN_PLUGINS=${nixPlugin} ${yarn-berry}/bin/yarn nix generate-pnp-file \$pnpDir $out/packageRegistryData.json "${locatorString}")
+            cp --no-preserve=mode "${./pnp.loader.mjs}" \$pnpDir/.pnp.loader.mjs
             binPackageLocation="\$(${nodejsPackage}/bin/node -r \$pnpDir/.pnp.cjs -e 'console.log(require("pnpapi").getPackageInformation({ name: process.argv[1], reference: process.argv[2] })?.packageLocation)' "${pkg.name}" "${pkg.reference}")"
 
             export PATH="${nodejsPackage}/bin:\''$PATH"
@@ -204,7 +200,6 @@ let
         };
 
       packageRegistryRuntimeOnly = buildPackageRegistry {
-        inherit pkgs;
         topLevel = packageManifest;
         inherit allPackageData;
         excludeDevDependencies = true;
@@ -215,21 +210,49 @@ let
         inherit locatorString;
       };
 
-      fetchDerivation = pkgs.stdenv.mkDerivation {
+      makeFetchOnlyDerivation = outputHash: pkgs.stdenv.mkDerivation {
+        name = outputName + (if willOutputBeZip then ".zip" else "");
+        phases = ["fetchPhase"];
+        outputHashMode = "flat";
+        outputHashAlgo = "sha512";
+        outputHash = outputHash;
+
+        buildInputs = with pkgs; [
+          yarn-berry
+          unzip
+        ];
+
+        fetchPhase = ''
+          set -euo pipefail
+          tmpDir=$PWD
+          ${setupYarnBinScript { inherit yarnManifestSettings; }}
+          touch yarn.lock
+          echo locatorToFetchJSON: ${locatorToFetchJSON}
+
+          # Without this, yarn fails with "RequestError: unable to get local issuer certificate"
+          export NODE_EXTRA_CA_CERTS="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+
+          ${if isSourceTgz
+            then "yarn nix convert-to-zip ${locatorToFetchJSON} ${src} $tmpDir/output.zip"
+            else "yarn nix fetch-by-locator ${locatorToFetchJSON} $tmpDir"
+          }
+          mv $tmpDir/output.zip $out
+        '';
+      };
+      unpluggedDerivation = pkgs.stdenv.mkDerivation {
         name = outputName + (if willOutputBeZip then ".zip" else "");
         phases =
-          (if willFetch then [ "fetchPhase" ] else [ "buildPhase" "packPhase" ]) ++
-          (if shouldBeUnplugged then [ "unplugPhase" ] else [ "movePhase" ]);
+          (lib.optionals willBuild [ "buildPhase" "packPhase" ])
+          ++
+          [( if shouldBeUnplugged then "unplugPhase" else "movePhase")]
+        ;
 
         inherit __noChroot;
-        outputHashMode = if __noChroot != true && outputHash != null then (if shouldBeUnplugged then "recursive" else "flat") else null;
-        outputHashAlgo = if __noChroot != true && outputHash != null then "sha512" else null;
-        outputHash = if __noChroot != true && outputHash != null then outputHash else null;
 
         buildInputs = with pkgs; [
           cacert
           nodejsPackage
-          defaultPkgs.yarn-berry
+          yarn-berry
           unzip
         ]
         ++ (if stdenv.isDarwin then [
@@ -237,21 +260,8 @@ let
         ] else [])
         ++ buildInputs;
 
-        fetchPhase =
-          if willFetch then ''
-            tmpDir=$PWD
-            ${setupYarnBinScript { inherit yarnManifestSettings; }}
-
-            packageLocation=$out/node_modules/${name}
-            touch yarn.lock
-
-            ${if src == null || isSourcePatch then "yarn nix fetch-by-locator ${locatorToFetchJSON} $tmpDir"
-            else if isSourceTgz then "yarn nix convert-to-zip ${locatorToFetchJSON} ${src} $tmpDir/output.zip"
-            else ""}
-          '' else " ";
-
         buildPhase =
-          if !willFetch then ''
+          if willBuild then ''
             tmpDir=$PWD
             ${setupYarnBinScript { inherit yarnManifestSettings; }}
 
@@ -260,7 +270,7 @@ let
             mkdir -p $packageLocation
             ${createLockFileScript}
             yarn nix generate-pnp-file $out $tmpDir/packageRegistryData.json "${locatorString}"
-            cp --no-preserve=mode "${./.pnp.loader.mjs}" $out/.pnp.loader.mjs
+            cp --no-preserve=mode "${./pnp.loader.mjs}" $out/.pnp.loader.mjs
 
             ${if build != "" then ''
             cp -rT ${src} $packageLocation
@@ -286,7 +296,7 @@ let
           '' else " ";
 
         packPhase =
-          if !willFetch then ''
+          if willBuild then ''
             touch yarn.lock
 
             ${if build != "" then ''
@@ -312,15 +322,32 @@ let
           # cp ${./pnptemp.cjs} $out/.pnp.cjs
           # sed -i "s!__PACKAGE_PATH_HERE__!$packageLocation/!" $out/.pnp.cjs
           if shouldBeUnplugged then ''
+            tmpDir=$PWD
             mkdir -p $out
-            unzip -qq -d $out $tmpDir/output.zip
+
+            echo ${name}
+            ${if willFetch
+              then ''
+                pkg_src=${makeFetchOnlyDerivation outputHash}
+                ${setupYarnBinScript { inherit yarnManifestSettings; }}
+                touch yarn.lock
+                ''
+              else ''
+                pkg_src=$tmpDir/output.zip
+              ''
+            }
+
+            unzip -qq -d $out $pkg_src
 
             packageLocation="$out/node_modules/${name}"
             packageDrvLocation="$out"
-            ${if build == "" then createLockFileScript else ""}
+
+            # TODO: build does not make sense here. Seems like some legacy or
+            # unfinished work
+            ${if build == "" then (createLockFileScript) else ""}
 
             yarn nix generate-pnp-file $out $tmpDir/packageRegistryData.json "${locatorString}"
-            cp --no-preserve=mode "${./.pnp.loader.mjs}" $out/.pnp.loader.mjs
+            cp --no-preserve=mode "${./pnp.loader.mjs}" $out/.pnp.loader.mjs
 
             # create dummy home directory in case any build scripts need it
             export HOME=$tmpDir/home
@@ -358,7 +385,10 @@ let
             mv $tmpDir/output.zip $out
           '' else " ";
       };
-
+      packageDerivation = if shouldBeUnplugged
+        then unpluggedDerivation
+        else makeFetchOnlyDerivation outputHash
+      ;
       # have a separate derivation that includes the .pnp.cjs and wrapped bins
       # as Nix is unable to shasum the derivation $out if it contains files that contain /nix/store paths
       # to other derivations that are fixed output derivations.
@@ -372,22 +402,22 @@ let
           [ "generateRuntimePhase" ] ++
           (if bin != null then [ "wrapBinPhase" ] else []);
 
-        buildInputs = with pkgs; [
+        buildInputs = [
           nodejsPackage
-          defaultPkgs.yarn-berry
+          yarn-berry
         ];
 
         generateRuntimePhase = ''
           tmpDir=$PWD
           ${setupYarnBinScript { inherit yarnManifestSettings; }}
 
-          packageLocation=${fetchDerivation}/node_modules/${name}
-          packageDrvLocation=${fetchDerivation}
+          packageLocation=${packageDerivation}/node_modules/${name}
+          packageDrvLocation=${packageDerivation}
           ${createLockFileScriptForRuntime}
 
           mkdir -p $out
           yarn nix generate-pnp-file $out $tmpDir/packageRegistryData.json "${locatorString}"
-          cp --no-preserve=mode "${./.pnp.loader.mjs}" $out/.pnp.loader.mjs
+          cp --no-preserve=mode "${./pnp.loader.mjs}" $out/.pnp.loader.mjs
         '';
 
         wrapBinPhase =
@@ -410,8 +440,8 @@ let
 
             $binSetup
 
-            ${if shouldBeUnplugged then ''exec ${fetchDerivation}/node_modules/${name}/${binScript} "\$@"''
-            else ''exec node ${fetchDerivation}/node_modules/${name}/${binScript} "\$@"''}
+            ${if shouldBeUnplugged then ''exec ${packageDerivation}/node_modules/${name}/${binScript} "\$@"''
+            else ''exec node ${packageDerivation}/node_modules/${name}/${binScript} "\$@"''}
             EOYP
             chmod +x $out/bin/${binKey}
             '') bin)}
@@ -464,7 +494,7 @@ let
       };
     in
     finalDerivation // {
-      package = fetchDerivation;
+      package = packageDerivation;
       manifest = packageManifest;
       transitiveRuntimePackages = filter (pkg: pkg != null) (mapAttrsToList (key: pkg: if pkg != null && !isString pkg.drvPath then pkg.drvPath.binDrvPath else null) packageRegistryRuntimeOnly);
       inherit shellRuntimeEnvironment;
@@ -476,7 +506,6 @@ let
   mkYarnPackageFromManifest_internal =
     {
       package,
-      pkgs,
       yarnManifest,
       yarnManifestSettings,
       allPackageData,
@@ -486,7 +515,6 @@ let
     in
     mkYarnPackageFromPackageManifest_internal {
       inherit packageManifest;
-      inherit pkgs;
       inherit yarnManifest;
       inherit yarnManifestSettings;
       inherit allPackageData;
@@ -495,14 +523,12 @@ let
   mkYarnPackageFromPackageManifest_internal =
     {
       packageManifest,
-      pkgs,
       yarnManifest,
       yarnManifestSettings,
       allPackageData,
     }:
     (makeOverridable mkYarnPackage_internal {
-      inherit pkgs;
-      nodejsPackage = if hasAttr "nodejsPackage" packageManifest then packageManifest.nodejsPackage else pkgs.nodejs;
+      nodejsPackage = if hasAttr "nodejsPackage" packageManifest then packageManifest.nodejsPackage else nodejs;
       inherit (packageManifest) name outputName;
       inherit packageManifest;
       inherit allPackageData;
@@ -518,7 +544,6 @@ let
 
   buildPackageDataFromYarnManifest =
     {
-      pkgs,
       yarnManifest,
       yarnManifestSettings,
     }:
@@ -531,14 +556,12 @@ let
         else
         let
           drv = mkYarnPackageFromPackageManifest_internal {
-            inherit pkgs;
             inherit yarnManifest;
             inherit yarnManifestSettings;
             packageManifest = resolvedPkg;
             inherit allPackageData;
           };
           drvForVirtual = mkYarnPackageFromPackageManifest_internal {
-            inherit pkgs;
             inherit yarnManifest;
             inherit yarnManifestSettings;
             packageManifest = resolvedPkg // {
@@ -575,7 +598,6 @@ let
 
   buildPackageRegistry =
     {
-      pkgs,
       topLevel,
       allPackageData,
       excludeDevDependencies ? false,
@@ -662,7 +684,4 @@ let
       );
     in
     packageRegistryData;
-in
-{
-  inherit mkYarnPackagesFromManifest;
-}
+in mkYarnPackagesFromManifest

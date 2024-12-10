@@ -2,7 +2,7 @@
   description = "yarnpnp2nix";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-23.11";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-24.05";
     utils.url = "github:numtide/flake-utils";
   };
 
@@ -16,13 +16,12 @@
             })
           ];
         };
-      in
-      rec {
+      in {
         packages = {
           yarn-plugin = pkgs.callPackage ./yarnPlugin.nix {};
         };
         lib = {
-          mkYarnPackagesFromManifest = (import ./lib/mkYarnPackage.nix { defaultPkgs = pkgs; lib = pkgs.lib; }).mkYarnPackagesFromManifest;
+          mkYarnPackagesFromManifest = pkgs.callPackage ./lib/mkYarnPackage.nix { };
         };
         devShell = import ./shell.nix {
           inherit pkgs;
