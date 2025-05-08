@@ -1,16 +1,23 @@
-import {Plugin} from '@yarnpkg/core';
-import {BaseCommand} from '@yarnpkg/cli';
-import {Option} from 'clipanion';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { PassThrough } from 'node:stream';
+
+import { BaseCommand } from '@yarnpkg/cli';
+import { Configuration, Project, Cache, StreamReport, Manifest, tgzUtils, hashUtils, structUtils, miscUtils, scriptUtils, Workspace } from "@yarnpkg/core";
+import { xfs, CwdFS, PortablePath, VirtualFS } from '@yarnpkg/fslib';
+import { ZipOpenFS } from '@yarnpkg/libzip';
+import { getPnpPath } from '@yarnpkg/plugin-pnp';
+import { fileUtils } from '@yarnpkg/plugin-file';
+import { generateInlinedScript } from '@yarnpkg/pnp';
+
+import { Option } from 'clipanion';
 import { execa, execaSync } from 'execa';
+import * as t from 'typanion';
+
 import PackCommand from './PackCommand'
 
 let getExistingManifestNix = require('../../lib/getExistingManifest.nix.txt')
 
-const fs = require('fs')
-const path = require('path')
-const { PassThrough } = require('stream')
-const { spawnSync } = require('child_process')
-const { generateInlinedScript } = require('@yarnpkg/pnp')
 
 let _nixCurrentSystem: string
 
@@ -53,15 +60,6 @@ export async function getExistingYarnManifest(manifestPath: string) {
     return null
   }
 }
-
-const { Configuration, Project, Workspace, Cache, StreamReport, Manifest, tgzUtils, structUtils, miscUtils, scriptUtils } = require("@yarnpkg/core")
-const { BaseCommand } = require('@yarnpkg/cli')
-const { xfs, CwdFS, PortablePath, VirtualFS } = require('@yarnpkg/fslib')
-const { ZipOpenFS } = require('@yarnpkg/libzip')
-const { getPnpPath, pnpUtils } = require('@yarnpkg/plugin-pnp')
-const { fileUtils } = require('@yarnpkg/plugin-file')
-const { Option } = require('clipanion')
-const t = require('typanion')
 
 class FetchCommand extends BaseCommand {
   static paths = [['nix', 'fetch-by-locator']]
@@ -420,11 +418,9 @@ class RunBuildScriptsCommand extends BaseCommand {
 
 export default {
   hooks: {
-    afterAllInstalled: async (project, opts) => {
+    afterAllInstalled: async (project: Project, opts) => {
       const linkers = project.configuration.getLinkers();
       const linkerOptions = {project, report: null};
-
-      const existingManifest = await getExistingYarnManifest(path.join(project.cwd, 'yarn-manifest.nix'))
 
       const installers = new Map(linkers.map(linker => {
         const installer = linker.makeInstaller(linkerOptions);
@@ -436,6 +432,9 @@ export default {
 
         return [linker, installer] as [Linker, Installer];
       }));
+
+      const cache = await Cache.find(project.configuration);
+
 
       const fetcher = project.configuration.makeFetcher();
       const fetchOptions = { checksums: new Map(), project, cache: null, fetcher, report: null }
@@ -505,6 +504,7 @@ export default {
                 'x64': 'stdenv.isx86_64',
                 'arm': 'stdenv.isAarch32',
                 'arm64': 'stdenv.isAarch64',
+                'wasm32': 'true',
               }
               if (cpuMapping[v] != null) {
                 nixConditions.push(cpuMapping[v])
@@ -605,62 +605,34 @@ export default {
 
         const manifestPackageId = structUtils.stringifyIdent(pkg) + '@' + pkg.reference
 
-        const packageInExistingManifest = existingManifest?.[manifestPackageId]
-
-        let outputHash = packageInExistingManifest?.outputHash
-        let outputHashByPlatform: any = packageInExistingManifest?.outputHashByPlatform ?? {}
-
-        await (async function() {
-          if (src != null && !isSourcePatch) {
-            // no outputHash for when a src is provided as the build will be completed locally.
-            outputHash = null
-            outputHashByPlatform = null
-            return
-          } else if (willOutputBeZip) {
-            // simple, use the hash of the zip file
-            const checksum = project.storedChecksums.get(pkg.locatorHash)
-            if (checksum != null) {
-              outputHash = checksum.substring(checksum.indexOf('/') + 1) // first 2-3 characters before slash are like a checksum version that yarn uses, we can discard
-            } else {
-              outputHash = null
-            }
-            outputHashByPlatform = null
-            return
-          } else if (shouldBeUnplugged) {
-            const shouldHashBePlatformSpecific = true // TODO only if package or dependencies have platform conditions maybe?
-            if (shouldHashBePlatformSpecific) {
-              if (outputHashByPlatform[nixCurrentSystem()] && !isSourcePatch) {
-                // got existing hash for this platform in the manifest, use existing hash
-                outputHash = null
-                return
-              } else {
-                const unplugPath = pnpUtils.getUnpluggedPath(pkg, {configuration: project.configuration});
-                if (unplugPath != null && await xfs.existsPromise(unplugPath)) {
-                  // console.log('fetching hash for', unplugPath)
-                  const res = await execaSync('nix', ['hash', 'path', '--type', 'sha512', unplugPath])
-                  if (res.stdout != null) {
-                    outputHash = null
-                    if (!outputHashByPlatform) outputHashByPlatform = {}
-                    outputHashByPlatform[nixCurrentSystem()] = res.stdout
-                    return
-                  }
-                } else {
-                  // leave as is? to avoid removing hashes from incompatible platforms
-                  if (Object.keys(outputHashByPlatform).length > 0 && outputHash == null) {
-                    return
-                  }
-                }
-              }
-            }
-            outputHash = ''
-            outputHashByPlatform = null
-            return
+        let outputHash: string | null;
+        if (src != null && !isSourcePatch) {
+          // no outputHash for when a src is provided as the build will be completed locally.
+          outputHash = null
+        } else if (willOutputBeZip) {
+          // simple, use the hash of the zip file
+          const checksum = project.storedChecksums.get(pkg.locatorHash)
+          if (checksum != null) {
+            outputHash = checksum.substring(checksum.indexOf('/') + 1) // first 2-3 characters before slash are like a checksum version that yarn uses, we can discard
           } else {
             outputHash = null
-            outputHashByPlatform = null
-            return
           }
-        })()
+        } else if (shouldBeUnplugged) {
+          const checksum = project.storedChecksums.get(pkg.locatorHash)
+          if (checksum != null) {
+            outputHash = checksum.substring(checksum.indexOf('/') + 1) // first 2-3 characters before slash are like a checksum version that yarn uses, we can discard
+          }
+          if (!outputHash) {
+            // console.log('got package unplugged package with no hash', pkg)
+            try {
+              const cachePath = cache.getLocatorPath(pkg, null)
+              outputHash = await hashUtils.checksumFile(cachePath)
+            } catch (error) {
+              // console.log('error getting outputHash', error.message)
+              outputHash = null;
+            }
+          }
+        }
 
         const descriptorHash = getByValue(project.storedResolutions, pkg.locatorHash)
         const descriptor = project.storedDescriptors.get(descriptorHash)
@@ -674,7 +646,6 @@ export default {
           linkType: pkg.linkType, // HARD package links are the most common, and mean that the target location is fully owned by the package manager. SOFT links, on the other hand, typically point to arbitrary user-defined locations on disk.
           outputName: [structUtils.stringifyIdent(pkg), pkg.version, pkg.locatorHash.substring(0, 10)].filter(part => !!part).join('-').replace(/@/g, '').replace(/[\/]/g, '-'),
           outputHash,
-          outputHashByPlatform,
           src,
           shouldBeUnplugged,
           installCondition,
