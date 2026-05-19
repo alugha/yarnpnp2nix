@@ -2,24 +2,29 @@
   "name": "yarn-plugin-yarnpnp2nix",
   "main": "./sources/index.ts",
   "dependencies": {
-    "@yarnpkg/builder": "^4.1.1",
-    "@yarnpkg/cli": "^4.3.1",
-    "@yarnpkg/core": "^4.1.1",
-    "@yarnpkg/pnp": "4.0.6",
+    "@yarnpkg/builder": "^4.2.3",
+    "@yarnpkg/cli": "^4.14.1",
+    "@yarnpkg/core": "^4.7.0",
+    "@yarnpkg/pnp": "patch:@yarnpkg/pnp@npm%3A4.1.5#~/.yarn/patches/@yarnpkg-pnp-npm-4.1.5-609682d52d.patch",
     "clipanion": "^4.0.0-rc.3",
-    "execa": "^9.3.0",
-    "micromatch": "^4.0.7",
-    "tar-stream": "^3.1.7",
+    "execa": "^9.6.1",
+    "micromatch": "^4.0.8",
+    "tar-stream": "^3.2.0",
     "typanion": "^3.14.0",
     "typescript": "^5.5.4"
   },
   "scripts": {
-    "build": "builder build plugin && mv bundles/@yarnpkg/plugin-yarnpnp2nix.js dist/ && node fix-dist.mjs"
+    "build": "builder build plugin && mv bundles/@yarnpkg/plugin-yarnpnp2nix.js dist/"
   },
   "devDependencies": {
     "@types/micromatch": "^4",
     "@types/node": "^22.0.0",
     "@types/tar-stream": "^3"
   },
-  "packageManager": "yarn@4.3.1"
+  "packageManager": "yarn@4.14.1",
+  "resolutions": {
+    "@yarnpkg/pnp@npm:^4.1.5": "patch:@yarnpkg/pnp@npm%3A4.1.5#~/.yarn/patches/@yarnpkg-pnp-npm-4.1.5-609682d52d.patch",
+    "@yarnpkg/pnp@npm:^4.1.2": "patch:@yarnpkg/pnp@npm%3A4.1.5#~/.yarn/patches/@yarnpkg-pnp-npm-4.1.5-609682d52d.patch",
+    "@yarnpkg/pnp@npm:^4.1.1": "patch:@yarnpkg/pnp@npm%3A4.1.5#~/.yarn/patches/@yarnpkg-pnp-npm-4.1.5-609682d52d.patch"
+  }
 }
