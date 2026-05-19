@@ -431,6 +431,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@yarnpkg/fslib@npm:^3.1.2":
+  version: 3.1.5
+  resolution: "@yarnpkg/fslib@npm:3.1.5"
+  dependencies:
+    tslib: "npm:^2.4.0"
+  checksum: 10/67b4850cdfbf0c11460302d997c0eacab46246cc8c7718a045beca346c494163e15768e2d20ab719ff6a98adbe7eaa9efcecdfd5cb0b8539f84a96449ac7ceaa
+  languageName: node
+  linkType: hard
+
 "@yarnpkg/libui@npm:^3.0.0":
   version: 3.0.0
   resolution: "@yarnpkg/libui@npm:3.0.0"
@@ -846,7 +855,17 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@yarnpkg/pnp@npm:4.0.6, @yarnpkg/pnp@npm:^4.0.2, @yarnpkg/pnp@npm:^4.0.5":
+"@yarnpkg/pnp@npm:4.0.10":
+  version: 4.0.10
+  resolution: "@yarnpkg/pnp@npm:4.0.10"
+  dependencies:
+    "@types/node": "npm:^18.17.15"
+    "@yarnpkg/fslib": "npm:^3.1.2"
+  checksum: 10/78deafb584f9c54f6f922c7bceba0ebfcd753cc4459559746a9515075ecaa3c4b5f41319de758d534635a6b30bb5835c9a0d0ad3ff5b404c895f24d39e5b9ae4
+  languageName: node
+  linkType: hard
+
+"@yarnpkg/pnp@npm:^4.0.2, @yarnpkg/pnp@npm:^4.0.5":
   version: 4.0.6
   resolution: "@yarnpkg/pnp@npm:4.0.6"
   dependencies:
@@ -2479,7 +2498,7 @@ __metadata:
     "@yarnpkg/builder": "npm:^4.1.1"
     "@yarnpkg/cli": "npm:^4.3.1"
     "@yarnpkg/core": "npm:^4.1.1"
-    "@yarnpkg/pnp": "npm:4.0.6"
+    "@yarnpkg/pnp": "npm:4.0.10"
     clipanion: "npm:^4.0.0-rc.3"
     execa: "npm:^9.3.0"
     micromatch: "npm:^4.0.7"
